@@ -33,6 +33,7 @@ def main():
         imgsz=640, 
         batch=16, 
         device=device,  # 使用上方判断的 device
+        project=r'E:\projects\npf-yolo\runs\detect', # 强制指定保存到当前项目的 runs/detect 下
         name='chip_defect_detection' # 训练结果将保存在 runs/detect/chip_defect_detection 下
     )
 
