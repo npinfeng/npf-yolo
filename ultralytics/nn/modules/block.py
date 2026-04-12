@@ -20,6 +20,7 @@ __all__ = (
     "C3TR",
     "CIB",
     "DFL",
+    "DynamicRouting",
     "ELAN1",
     "PSA",
     "SPP",
@@ -78,6 +79,40 @@ class DFL(nn.Module):
         b, _, a = x.shape  # batch, channels, anchors
         return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
+
+
+class DynamicRouting(nn.Module):
+    """Dynamic Routing Gating Network for spatial and asymmetric computation."""
+
+    def __init__(self, c1: int, c2: int):
+        """Initialize DynamicRouting module.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+        """
+        super().__init__()
+        c2 = c2 or c1
+
+        # Lightweight Mask Generator at low resolution
+        self.mask_generator = nn.Sequential(
+            Conv(c1, max(1, c1 // 4), 1),
+            nn.Conv2d(max(1, c1 // 4), 1, 1),
+            nn.Sigmoid()
+        )
+
+        # Heavier feature extractor for complex regions (e.g., 3x3 convolution)
+        self.complex_extractor = Conv(c1, c2, 3)
+
+        # Identity path for background/simple regions
+        self.identity = nn.Identity() if c1 == c2 else Conv(c1, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass applying spatial mask and asymmetric computation."""
+        mask = self.mask_generator(x)  # [B, 1, H, W]
+        out_complex = self.complex_extractor(x)
+        out_identity = self.identity(x)
+        return out_complex * mask + out_identity * (1.0 - mask)
 
 
 class Proto(nn.Module):
