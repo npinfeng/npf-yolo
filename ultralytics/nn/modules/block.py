@@ -82,37 +82,98 @@ class DFL(nn.Module):
 
 
 class DynamicRouting(nn.Module):
-    """Dynamic Routing Gating Network for spatial and asymmetric computation."""
+    """Dynamic Routing Gating Network for spatial and asymmetric computation.
 
-    def __init__(self, c1: int, c2: int):
+    Uses a "baseline-enhancement" formulation:
+        Output = out_identity + mask * out_complex
+
+    The identity path provides stable baseline features at all times. The complex
+    branch learns only the incremental "residual" contribution, gated by the spatial
+    importance mask. Even when mask values are small, the baseline semantic flow is
+    preserved.
+
+    The mask_generator's final conv bias is initialised to 2.0 so that sigmoid
+    outputs start near 0.88, giving the complex branch a strong warm-up signal
+    during the first ~100-150 epochs. A mean-penalty auxiliary loss
+    (accessible via ``self.mask_loss``) can be added to the total training loss to
+    prevent the gate from collapsing to zero activation ("gate laziness"):
+
+        ``Loss_mask = λ * |mean(mask) - 0.5|``
+
+    Attributes:
+        mask_generator (nn.Sequential): Lightweight spatial gate, outputs [B, 1, H, W] in (0, 1).
+        complex_extractor (Conv): Heavy 3×3 conv extractor for detail-rich regions.
+        identity (nn.Module): 1×1 projection (or nn.Identity) for the baseline path.
+        mask_loss (torch.Tensor | None): Scalar penalty term populated after each forward
+            pass; ``None`` until the first forward call.
+        mask_mean (torch.Tensor | None): Running mean of the last mask, for monitoring.
+        mask_loss_weight (float): λ controlling the strength of the mean-penalty loss.
+    """
+
+    def __init__(self, c1: int, c2: int, mask_loss_weight: float = 0.05):
         """Initialize DynamicRouting module.
 
         Args:
             c1 (int): Input channels.
             c2 (int): Output channels.
+            mask_loss_weight (float): λ for the mask mean-penalty loss term.
         """
         super().__init__()
         c2 = c2 or c1
+        self.mask_loss_weight = mask_loss_weight
 
-        # Lightweight Mask Generator at low resolution
+        # ----- Lightweight Mask Generator (runs at backbone output resolution) -----
+        _mid = max(1, c1 // 4)
+        _last_conv = nn.Conv2d(_mid, 1, 1)
+        # Strategy 2: bias initialisation → sigmoid(2.0) ≈ 0.88, giving Complex
+        # branch a strong activation during the first 100-150 epochs of "warm-up".
+        nn.init.constant_(_last_conv.bias, 2.0)
+
         self.mask_generator = nn.Sequential(
-            Conv(c1, max(1, c1 // 4), 1),
-            nn.Conv2d(max(1, c1 // 4), 1, 1),
-            nn.Sigmoid()
+            Conv(c1, _mid, 1),
+            _last_conv,
+            nn.Sigmoid(),
         )
 
-        # Heavier feature extractor for complex regions (e.g., 3x3 convolution)
+        # ----- Complex extractor for chip-defect-rich / detail regions -----
         self.complex_extractor = Conv(c1, c2, 3)
 
-        # Identity path for background/simple regions
+        # ----- Identity / projection path providing the stable baseline -----
         self.identity = nn.Identity() if c1 == c2 else Conv(c1, c2, 1)
 
+        # Monitoring state (populated in forward)
+        self.mask_loss: torch.Tensor | None = None
+        self.mask_mean: torch.Tensor | None = None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass applying spatial mask and asymmetric computation."""
-        mask = self.mask_generator(x)  # [B, 1, H, W]
+        """Forward pass using baseline-enhancement fusion.
+
+        Formula (Strategy 1 – "Baseline Enhancement"):
+            Output = out_identity + mask * out_complex
+
+        The identity path always contributes the full baseline features.
+        The complex branch adds the gated residual increment on top.
+
+        Side-effects:
+            Updates ``self.mask_loss`` and ``self.mask_mean`` for monitoring /
+            integration into the training loss.
+        """
+        mask = self.mask_generator(x)  # [B, 1, H, W], values in (0, 1)
+
         out_complex = self.complex_extractor(x)
         out_identity = self.identity(x)
-        return out_complex * mask + out_identity * (1.0 - mask)
+
+        # Strategy 1: Baseline-Enhancement — identity is always present
+        out = out_identity + mask * out_complex
+
+        # Strategy 3: Mask statistics — compute mean-penalty auxiliary loss
+        # Loss_mask = λ · |mean(mask) − 0.5|
+        # Forces the gate to retain at least ~50 % of regions for deep extraction
+        # while discouraging both full-on (wasteful) and full-off (inaccurate) modes.
+        self.mask_mean = mask.mean()
+        self.mask_loss = self.mask_loss_weight * torch.abs(self.mask_mean - 0.5)
+
+        return out
 
 
 class Proto(nn.Module):

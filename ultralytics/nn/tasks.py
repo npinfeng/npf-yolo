@@ -322,18 +322,36 @@ class BaseModel(torch.nn.Module):
             LOGGER.info(f"Transferred {len_updated_csd}/{len(self.model.state_dict())} items from pretrained weights")
 
     def loss(self, batch, preds=None):
-        """Compute loss.
+        """Compute loss, including any DynamicRouting mask-penalty auxiliary loss.
+
+        Iterates over all DynamicRouting modules in the model and accumulates their
+        ``mask_loss`` tensors (populated during the most recent forward pass) into
+        the detection loss. This ensures the gate does not collapse to near-zero
+        activation ("gate laziness") during long training runs.
 
         Args:
             batch (dict): Batch to compute loss on.
             preds (torch.Tensor | list[torch.Tensor], optional): Predictions.
+
+        Returns:
+            (tuple[torch.Tensor, torch.Tensor]): Total loss scalar and per-component
+                loss tensor, matching the format expected by BaseTrainer.
         """
         if getattr(self, "criterion", None) is None:
             self.criterion = self.init_criterion()
 
         if preds is None:
             preds = self.forward(batch["img"])
-        return self.criterion(preds, batch)
+
+        loss, loss_items = self.criterion(preds, batch)
+
+        # Accumulate DynamicRouting mask-penalty losses from all gate modules.
+        # Each DynamicRouting.forward() stores its scalar mask_loss after execution.
+        for m in self.modules():
+            if isinstance(m, DynamicRouting) and m.mask_loss is not None:
+                loss = loss + m.mask_loss
+
+        return loss, loss_items
 
     def init_criterion(self):
         """Initialize the loss criterion for the BaseModel."""
