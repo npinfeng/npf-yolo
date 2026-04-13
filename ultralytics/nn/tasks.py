@@ -343,13 +343,48 @@ class BaseModel(torch.nn.Module):
         if preds is None:
             preds = self.forward(batch["img"])
 
+        # Strategy 3: Mask mean-penalty auxiliary loss via temporary forward hooks.
+        #
+        # We must NOT store any live (graph-attached) tensor as a module attribute,
+        # because EMA calls deepcopy(model) after every optimiser step and PyTorch
+        # raises for non-leaf tensors:
+        #   RuntimeError: Only Tensors created explicitly by the user (graph leaves)
+        #   support the deepcopy protocol at the moment.
+        #
+        # Solution: register a short-lived hook on each DynamicRouting module BEFORE
+        # the forward pass runs; the hook captures the mask tensor into a local list;
+        # we remove every hook immediately after the forward pass so they never
+        # outlive a single loss() call.
+        captured: list[tuple["DynamicRouting", torch.Tensor]] = []
+        hooks = []
+
+        def _make_hook(mod):
+            def _hook(module, inp, out):
+                # Recompute mask from inp so we get a fresh graph-attached tensor.
+                captured.append((mod, mod.mask_generator(inp[0])))
+            return _hook
+
+        # Only register hooks when we are about to run our own forward pass.
+        # If preds was pre-supplied the caller already ran forward externally and
+        # we cannot hook into it; skip mask penalty in that case (no-op).
+        pre_supplied = preds is not None
+        if not pre_supplied:
+            for m in self.modules():
+                if isinstance(m, DynamicRouting):
+                    hooks.append(m.register_forward_hook(_make_hook(m)))
+
+        if preds is None:
+            preds = self.forward(batch["img"])
+
+        # Hooks have fired by now — remove them immediately.
+        for h in hooks:
+            h.remove()
+
         loss, loss_items = self.criterion(preds, batch)
 
-        # Accumulate DynamicRouting mask-penalty losses from all gate modules.
-        # Each DynamicRouting.forward() stores its scalar mask_loss after execution.
-        for m in self.modules():
-            if isinstance(m, DynamicRouting) and m.mask_loss is not None:
-                loss = loss + m.mask_loss
+        # Compute Loss_mask = λ · |mean(mask) − 0.5| and accumulate.
+        for mod, mask in captured:
+            loss = loss + mod.mask_loss_weight * torch.abs(mask.mean() - 0.5)
 
         return loss, loss_items
 

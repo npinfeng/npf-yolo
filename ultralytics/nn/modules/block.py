@@ -104,10 +104,15 @@ class DynamicRouting(nn.Module):
         mask_generator (nn.Sequential): Lightweight spatial gate, outputs [B, 1, H, W] in (0, 1).
         complex_extractor (Conv): Heavy 3×3 conv extractor for detail-rich regions.
         identity (nn.Module): 1×1 projection (or nn.Identity) for the baseline path.
-        mask_loss (torch.Tensor | None): Scalar penalty term populated after each forward
-            pass; ``None`` until the first forward call.
-        mask_mean (torch.Tensor | None): Running mean of the last mask, for monitoring.
+        mask_mean_item (float | None): Detached scalar mean of the last mask (Python float),
+            safe for deepcopy and logging. ``None`` before the first forward pass.
         mask_loss_weight (float): λ controlling the strength of the mean-penalty loss.
+
+    Notes:
+        No live (graph-attached) tensor is ever stored as a module attribute. The
+        mean-penalty loss is computed via a temporary ``register_forward_hook`` in
+        ``BaseModel.loss()`` and the hook is removed immediately afterwards, so
+        ``deepcopy`` (used by EMA) always succeeds.
     """
 
     def __init__(self, c1: int, c2: int, mask_loss_weight: float = 0.05):
@@ -141,9 +146,9 @@ class DynamicRouting(nn.Module):
         # ----- Identity / projection path providing the stable baseline -----
         self.identity = nn.Identity() if c1 == c2 else Conv(c1, c2, 1)
 
-        # Monitoring state (populated in forward)
-        self.mask_loss: torch.Tensor | None = None
-        self.mask_mean: torch.Tensor | None = None
+        # mask_mean_item: detached Python float for logging — safe to deepcopy.
+        # No live tensor is stored on the module to avoid EMA deepcopy failures.
+        self.mask_mean_item: float | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass using baseline-enhancement fusion.
@@ -155,23 +160,21 @@ class DynamicRouting(nn.Module):
         The complex branch adds the gated residual increment on top.
 
         Side-effects:
-            Updates ``self.mask_loss`` and ``self.mask_mean`` for monitoring /
-            integration into the training loss.
+            Updates ``self.mask_mean_item`` (detached Python float) for logging.
+            No graph-attached tensor is ever stored on the module, ensuring
+            ``deepcopy`` (used by ModelEMA) always succeeds.
         """
         mask = self.mask_generator(x)  # [B, 1, H, W], values in (0, 1)
 
         out_complex = self.complex_extractor(x)
         out_identity = self.identity(x)
 
-        # Strategy 1: Baseline-Enhancement — identity is always present
+        # Strategy 1: Baseline-Enhancement — identity always contributes fully.
         out = out_identity + mask * out_complex
 
-        # Strategy 3: Mask statistics — compute mean-penalty auxiliary loss
-        # Loss_mask = λ · |mean(mask) − 0.5|
-        # Forces the gate to retain at least ~50 % of regions for deep extraction
-        # while discouraging both full-on (wasteful) and full-off (inaccurate) modes.
-        self.mask_mean = mask.mean()
-        self.mask_loss = self.mask_loss_weight * torch.abs(self.mask_mean - 0.5)
+        # Only store a detached Python float for monitoring — never a live tensor.
+        # (Live tensors stored as module attributes break EMA deepcopy.)
+        self.mask_mean_item = mask.mean().item()
 
         return out
 
