@@ -55,7 +55,4 @@ head:
   - [[-1, 11], 1, Concat, [1]] # cat head P5 (uses DynamicRouting output mask/features) # 22
   - [-1, 1, C3k2, [1024, True, 0.5, True]] # 23 (P5/32-large)
 
-  # --- Reparameterized Boundary Refinement Head ---
-  # 训练阶段：引入隐式边界细化分支，结合梯度信息预测边界“偏移概率场”，使用基于Wasserstein距离的边界损失强化边缘学习。
-  # 推理阶段：通过结构重参数化（Structural Reparameterization）技术，将边界细化分支与主干卷积完全等价地融合为一个 1x1 卷积，实现无损加速。
-  - [[17, 20, 23], 1, RepBoundaryDetect, [nc]] # RepBoundaryDetect(P3, P4, P5) # 24
+  - [[17, 20, 23], 1, Detect, [nc]] # Detect(P3, P4, P5) # 24
