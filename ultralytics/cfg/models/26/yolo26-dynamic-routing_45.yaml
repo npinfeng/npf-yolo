@@ -39,20 +39,23 @@ backbone:
 
 # YOLO26n head
 head:
-  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 12
-  - [[-1, 6], 1, Concat, [1]] # cat backbone P4 # 13
-  - [-1, 2, C3k2, [512, True]] # 14
+  # --- DynamicGate branch for P4 ---
+  - [6, 1, DynamicRouting, [512]] # 12 (Gate for backbone P4)
 
-  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 15
-  - [[-1, 4], 1, Concat, [1]] # cat backbone P3 # 16
-  - [-1, 2, C3k2, [256, True]] # 17 (P3/8-small)
+  - [11, 1, nn.Upsample, [None, 2, "nearest"]] # 13
+  - [[-1, 12], 1, Concat, [1]] # 14 cat backbone P4
+  - [-1, 2, C3k2, [512, True]] # 15
 
-  - [-1, 1, Conv, [256, 3, 2]] # 18
-  - [[-1, 14], 1, Concat, [1]] # cat head P4 # 19
-  - [-1, 2, C3k2, [512, True]] # 20 (P4/16-medium)
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 16
+  - [[-1, 4], 1, Concat, [1]] # 17 cat backbone P3
+  - [-1, 2, C3k2, [256, True]] # 18 (P3/8-small)
 
-  - [-1, 1, Conv, [512, 3, 2]] # 21
-  - [[-1, 11], 1, Concat, [1]] # cat head P5 (uses DynamicRouting output mask/features) # 22
-  - [-1, 1, C3k2, [1024, True, 0.5, True]] # 23 (P5/32-large)
+  - [-1, 1, Conv, [256, 3, 2]] # 19
+  - [[-1, 15], 1, Concat, [1]] # 20 cat head P4
+  - [-1, 2, C3k2, [512, True]] # 21 (P4/16-medium)
 
-  - [[17, 20, 23], 1, Detect, [nc]] # Detect(P3, P4, P5) # 24
+  - [-1, 1, Conv, [512, 3, 2]] # 22
+  - [[-1, 11], 1, Concat, [1]] # 23 cat head P5
+  - [-1, 1, C3k2, [1024, True, 0.5, True]] # 24 (P5/32-large)
+
+  - [[18, 21, 24], 1, Detect, [nc]] # Detect(P3, P4, P5) # 25
