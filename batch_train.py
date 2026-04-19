@@ -65,7 +65,7 @@ COMMON_SETTINGS = {
     "save_period": -1,      # 每N个epoch保存 (-1 关闭)
     "cache": False,         # 缓存图片到内存
     "exist_ok": False,      # 是否覆盖已有实验目录
-    "project": "runs/detect_26",  # 项目保存根目录
+    "project": r"F:\npfcode\npf-yolo\runs\detect_26",  # 项目保存根目录
     "amp": True,            # 混合精度训练
     "cos_lr": False,        # 余弦学习率调度
     "seed": 42,              # 随机种子
