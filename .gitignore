@@ -1,7 +1,7 @@
 runs/
 /train_yolo.py
 /test_yolo.py
-
+/batch_train.py
 __pycache__/
 *.py[cod]
 *$py.class
